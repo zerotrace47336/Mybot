@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Universal AI Chat</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<style>
+body{font-family:system-ui}
+#loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:white;z-index:50}
+.dark #loading{background:#111}
+</style>
+</head>
+
+<body class="bg-gray-100 dark:bg-gray-900">
+
+<div id="loading">Loading App...</div>
+
+<div id="app" class="min-h-screen flex hidden">
+
+<!-- Sidebar -->
+<div id="sidebar" class="w-64 bg-white dark:bg-gray-800 border-r dark:border-gray-700 flex flex-col">
+
+<div class="p-3 flex justify-between">
+<button id="newChat" class="bg-blue-500 text-white px-3 py-1 rounded">New</button>
+<button id="settingsBtn">⚙️</button>
+</div>
+
+<div id="chatList" class="flex-1 overflow-y-auto"></div>
+
+</div>
+
+<!-- Main -->
+<div class="flex-1 flex flex-col">
+
+<!-- Top bar -->
+<div class="p-3 border-b dark:border-gray-700 flex justify-between">
+
+<button id="menuBtn" class="md:hidden">☰</button>
+
+<div class="flex gap-2">
+<button id="darkToggle">🌙</button>
+</div>
+
+</div>
+
+<!-- Messages -->
+<div id="messages" class="flex-1 overflow-y-auto p-4 space-y-4"></div>
+
+<!-- Input -->
+<div class="border-t dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
+
+<div class="flex gap-2">
+<textarea id="input" class="flex-1 border rounded p-2 dark:bg-gray-700"></textarea>
+<button id="sendBtn" class="bg-blue-500 text-white px-4 rounded">Send</button>
+</div>
+
+</div>
+
+</div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settingsModal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center">
+
+<div class="bg-white dark:bg-gray-800 p-5 rounded w-80 space-y-3">
+
+<h2 class="font-bold">Settings</h2>
+
+<input id="apiKey" placeholder="OpenRouter API Key" class="w-full border p-2 rounded">
+
+<input id="model" placeholder="Model name" class="w-full border p-2 rounded" value="deepseek/deepseek-r1:free">
+
+<textarea id="systemPrompt" placeholder="System Prompt" class="w-full border p-2 rounded"></textarea>
+
+<button id="saveSettings" class="bg-blue-500 text-white px-3 py-1 rounded">Save</button>
+
+</div>
+
+</div>
+
+<script>
+
+const loading=document.getElementById("loading")
+const app=document.getElementById("app")
+
+const messagesDiv=document.getElementById("messages")
+const input=document.getElementById("input")
+const sendBtn=document.getElementById("sendBtn")
+
+const apiKeyInput=document.getElementById("apiKey")
+const modelInput=document.getElementById("model")
+const systemPromptInput=document.getElementById("systemPrompt")
+
+const settingsModal=document.getElementById("settingsModal")
+
+let chats=JSON.parse(localStorage.getItem("chats")||"[]")
+let currentChat=0
+
+function save(){
+localStorage.setItem("chats",JSON.stringify(chats))
+}
+
+function renderChats(){
+const list=document.getElementById("chatList")
+list.innerHTML=""
+
+chats.forEach((c,i)=>{
+const el=document.createElement("div")
+el.className="p-2 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700"
+el.innerText=c.name||"Chat"
+el.onclick=()=>{currentChat=i;renderMessages()}
+list.appendChild(el)
+})
+}
+
+function renderMessages(){
+messagesDiv.innerHTML=""
+const chat=chats[currentChat]
+if(!chat)return
+
+chat.messages.forEach(m=>{
+addMessage(m.role,m.content,false)
+})
+}
+
+function addMessage(role,content,scroll=true){
+
+const div=document.createElement("div")
+
+if(role==="user"){
+div.className="text-right"
+}
+
+const bubble=document.createElement("div")
+bubble.className="inline-block p-3 rounded bg-gray-200 dark:bg-gray-700"
+
+bubble.innerHTML=marked.parse(content)
+
+div.appendChild(bubble)
+
+messagesDiv.appendChild(div)
+
+if(scroll)messagesDiv.scrollTop=messagesDiv.scrollHeight
+
+return bubble
+}
+
+async function send(){
+
+const text=input.value.trim()
+if(!text)return
+
+input.value=""
+
+const chat=chats[currentChat]
+
+chat.messages.push({role:"user",content:text})
+
+addMessage("user",text)
+
+const bubble=addMessage("assistant","")
+
+let full=""
+
+const res=await fetch("https://openrouter.ai/api/v1/chat/completions",{
+method:"POST",
+headers:{
+"Authorization":"Bearer "+localStorage.getItem("apiKey"),
+"Content-Type":"application/json"
+},
+body:JSON.stringify({
+model:localStorage.getItem("model")||"deepseek/deepseek-r1:free",
+messages:[
+{role:"system",content:localStorage.getItem("systemPrompt")||""},
+...chat.messages
+],
+stream:true
+})
+})
+
+const reader=res.body.getReader()
+const decoder=new TextDecoder()
+
+while(true){
+
+const {done,value}=await reader.read()
+
+if(done)break
+
+const chunk=decoder.decode(value)
+
+const lines=chunk.split("\n")
+
+for(let line of lines){
+
+if(!line.startsWith("data:"))continue
+
+const data=line.replace("data:","").trim()
+
+if(data==="[DONE]")return
+
+try{
+
+const json=JSON.parse(data)
+
+const token=json.choices[0].delta?.content
+
+if(token){
+full+=token
+bubble.innerHTML=marked.parse(full)
+messagesDiv.scrollTop=messagesDiv.scrollHeight
+}
+
+}catch{}
+
+}
+
+}
+
+chat.messages.push({role:"assistant",content:full})
+
+save()
+
+}
+
+sendBtn.onclick=send
+
+input.addEventListener("keydown",e=>{
+if(e.key==="Enter"&&!e.shiftKey){
+e.preventDefault()
+send()
+}
+})
+
+document.getElementById("newChat").onclick=()=>{
+chats.push({name:"New Chat",messages:[]})
+currentChat=chats.length-1
+save()
+renderChats()
+renderMessages()
+}
+
+document.getElementById("settingsBtn").onclick=()=>{
+settingsModal.classList.remove("hidden")
+
+apiKeyInput.value=localStorage.getItem("apiKey")||""
+modelInput.value=localStorage.getItem("model")||"deepseek/deepseek-r1:free"
+systemPromptInput.value=localStorage.getItem("systemPrompt")||""
+}
+
+document.getElementById("saveSettings").onclick=()=>{
+localStorage.setItem("apiKey",apiKeyInput.value)
+localStorage.setItem("model",modelInput.value)
+localStorage.setItem("systemPrompt",systemPromptInput.value)
+settingsModal.classList.add("hidden")
+}
+
+document.getElementById("menuBtn").onclick=()=>{
+document.getElementById("sidebar").classList.toggle("hidden")
+}
+
+document.getElementById("darkToggle").onclick=()=>{
+document.documentElement.classList.toggle("dark")
+localStorage.setItem("dark",document.documentElement.classList.contains("dark"))
+}
+
+if(localStorage.getItem("dark")==="true"){
+document.documentElement.classList.add("dark")
+}
+
+if(chats.length===0){
+chats=[{name:"Chat 1",messages:[]}]
+}
+
+renderChats()
+renderMessages()
+
+loading.style.display="none"
+app.classList.remove("hidden")
+
+</script>
+
+</body>
+</html>
